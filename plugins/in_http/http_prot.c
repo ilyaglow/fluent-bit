@@ -127,7 +127,7 @@ static int send_response(struct http_conn *conn, int http_status, char *message)
     }
     else if (http_status == 400) {
         flb_sds_printf(&out,
-                       "HTTP/1.1 400 Forbidden\r\n"
+                       "HTTP/1.1 400 Bad Request\r\n"
                        "Server: Fluent Bit v%s\r\n"
                        "Content-Length: %i\r\n\r\n%s",
                        FLB_VERSION_STR,
@@ -727,7 +727,7 @@ static int send_response_ng(struct flb_http_response *response,
         flb_http_response_set_message(response, "No Content");
     }
     else if (http_status == 400) {
-        flb_http_response_set_message(response, "Forbidden");
+        flb_http_response_set_message(response, "Bad Request");
     }
 
     if (http_status == 200 || 
@@ -1016,6 +1016,11 @@ static ssize_t parse_payload_urlencoded_ng(flb_sds_t tag,
         idx++;
     }
 
+    if (idx == 0) {
+        flb_plg_warn(ctx->ins, "invalid form data, skipping");
+        goto decode_error;
+    }
+
     msgpack_pack_map(&pck, mk_list_size(kvs));
     for (idx = 0; idx < mk_list_size(kvs); idx++) {
         msgpack_pack_str(&pck, flb_sds_len(keys[idx]));
@@ -1055,6 +1060,7 @@ static int process_payload_ng(flb_sds_t tag,
                            struct flb_http_response *response)
 {
     int type;
+    int ret;
 
     type = -1;
     
@@ -1083,9 +1089,17 @@ static int process_payload_ng(flb_sds_t tag,
     }
 
     if (type == HTTP_CONTENT_JSON) {
-        parse_payload_json_ng(tag, request);
+        ret = parse_payload_json_ng(tag, request);
+        if (ret != 0) {
+            send_response_ng(response, 400, "error: failed parsing JSON\n");
+            return -1;
+        }
     } else if (type == HTTP_CONTENT_URLENCODED) {
-        parse_payload_urlencoded_ng(tag, request);
+        ret = parse_payload_urlencoded_ng(tag, request);
+        if (ret != 0) {
+            send_response_ng(response, 400, "error: failed parsing urlencoded form\n");
+            return -1;
+        }
     }
 
     return 0;
@@ -1145,10 +1159,11 @@ int http_prot_handle_ng(struct flb_http_request *request,
     }
 
     ret = process_payload_ng(tag, request, response);
+    if (ret == 0) {
+        send_response_ng(response, context->successful_response_code, NULL);
+    }
 
     flb_sds_destroy(tag);
-
-    send_response_ng(response, context->successful_response_code, NULL);
 
     return ret;
 }
